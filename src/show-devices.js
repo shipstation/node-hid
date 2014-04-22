@@ -1,3 +1,3 @@
-var HID = require('HID');
+var HID = require('../');
 
 console.log('devices:', HID.devices());

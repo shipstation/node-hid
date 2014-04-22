@@ -29,6 +29,7 @@
 
 #include <v8.h>
 #include <node.h>
+#include <node_buffer.h>
 
 #include <hidapi.h>
 
@@ -43,7 +44,8 @@ using namespace node;
 class JSException
 {
 public:
-  JSException(const string& text) : _message(text) {};
+  JSException(const string& text) : _message(text) {}
+  virtual ~JSException() {}
   virtual const string message() const { return _message; }
   virtual Handle<Value> asV8Exception() const { return ThrowException(String::New(message().c_str())); }
 
@@ -193,12 +195,19 @@ HID::readResultsToJSCallbackArguments(ReceiveIOCB* iocb, Local<Value> argv[])
     argv[0] = Exception::Error(String::New(iocb->_error->message().c_str()));
   } else {
     const vector<unsigned char>& message = iocb->_data;
-    Local<Array> jsMessage = Array::New(message.size());
+    //Get "fast" node Buffer constructor
+    Local<Function> nodeBufConstructor = Local<Function>::Cast(
+      Context::GetCurrent()->Global()->Get(String::New("Buffer") )
+    );
+    //Construct a new Buffer
+    Handle<Value> nodeBufferArgs[1] = { Integer::New(message.size()) };
+    Local<Object> buf = nodeBufConstructor->NewInstance(1, nodeBufferArgs);
+    char* data = Buffer::Data(buf);
     int j = 0;
     for (vector<unsigned char>::const_iterator k = message.begin(); k != message.end(); k++) {
-      jsMessage->Set(j++, v8::Integer::New(*k));
+      data[j++] = *k;
     }
-    argv[1] = jsMessage;
+    argv[1] = buf;
   }
 }
 
@@ -245,7 +254,7 @@ HID::read(const Arguments& args)
   req->data = new ReceiveIOCB(hid,
                              Persistent<Object>::New(Local<Object>::Cast(args.This())),
                              Persistent<Function>::New(Local<Function>::Cast(args[0])));
-  uv_queue_work(uv_default_loop(), req, recvAsync, recvAsyncDone);
+  uv_queue_work(uv_default_loop(), req, recvAsync, (uv_after_work_cb)recvAsyncDone);
 
   return Undefined();
 }
@@ -354,7 +363,7 @@ HID::New(const Arguments& args)
     }
     hid->Wrap(args.This());
     return args.This();
-  }    
+  }
   catch (const JSException& e) {
     return e.asV8Exception();
   }
@@ -478,9 +487,25 @@ HID::devices(const Arguments& args)
   return retval;
 }
 
+static void
+deinitialize(void*)
+{
+  if (hid_exit()) {
+    cerr << "cannot initialize hidapi (hid_init failed)" << endl;
+    abort();
+  }
+}
+
 void
 HID::Initialize(Handle<Object> target)
 {
+  if (hid_init()) {
+    cerr << "cannot initialize hidapi (hid_init failed)" << endl;
+    abort();
+  }
+
+  node::AtExit(deinitialize, 0);
+
   HandleScope scope;
 
   Local<FunctionTemplate> hidTemplate = FunctionTemplate::New(HID::New);
